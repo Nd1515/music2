@@ -73,6 +73,10 @@ static void MusicBackgroundApplySession(void) {
 - (void)prev;
 - (void)toggle;
 - (void)playURL:(id)url local:(BOOL)local;
+- (NSArray *)q;
+- (NSInteger)i;
+- (void)ended;
+- (void)playList:(NSArray *)list index:(NSInteger)index;
 @end
 
 @interface Player (MusicBackgroundMedia)
@@ -131,6 +135,80 @@ static void MusicBackgroundApplySession(void) {
 - (void)mb_toggle {
     [self mb_toggle];
     [self performSelector:@selector(mb_updateNowPlaying) withObject:nil afterDelay:0.2];
+}
+
+@end
+
+
+#pragma mark - Playback modes
+
+static NSString * const kMBPlaybackModeKey = @"MBPlaybackMode";
+
+static NSInteger MBPlaybackMode(void) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:kMBPlaybackModeKey] == nil) return 1;
+    return [defaults integerForKey:kMBPlaybackModeKey];
+}
+
+static NSString *MBPlaybackModeName(NSInteger mode) {
+    if (mode == 0) return @"单曲循环";
+    if (mode == 2) return @"随机播放";
+    return @"列表顺序";
+}
+
+@interface PlayerVC : UIViewController
+- (UIButton *)btnLoop;
+- (void)loopTap;
+@end
+
+@interface Player (MusicBackgroundPlayback)
+- (void)mb_ended;
+@end
+
+@implementation Player (MusicBackgroundPlayback)
+
+- (void)mb_ended {
+    NSInteger mode = MBPlaybackMode();
+    NSArray *queue = [self q];
+    if (mode == 0 || queue.count < 2) {
+        [self mb_ended];
+        return;
+    }
+    NSInteger count = (NSInteger)queue.count;
+    NSInteger index = [self i];
+    NSInteger nextIndex = 0;
+    if (mode == 2) {
+        nextIndex = (NSInteger)arc4random_uniform((uint32_t)count);
+        if (nextIndex == index && count > 1) nextIndex = (nextIndex + 1) % count;
+    } else {
+        nextIndex = index + 1;
+        if (nextIndex >= count) nextIndex = 0;
+    }
+    [self playList:queue index:nextIndex];
+}
+
+@end
+
+@interface PlayerVC (MusicBackgroundModeButton)
+- (void)mb_loopTap;
+@end
+
+@implementation PlayerVC (MusicBackgroundModeButton)
+
+- (void)mb_loopTap {
+    NSInteger mode = (MBPlaybackMode() + 1) % 3;
+    [[NSUserDefaults standardUserDefaults] setInteger:mode forKey:kMBPlaybackModeKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    UIButton *button = [self btnLoop];
+    if ([button isKindOfClass:[UIButton class]]) {
+        button.accessibilityLabel = MBPlaybackModeName(mode);
+    }
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"播放模式"
+                                                    message:MBPlaybackModeName(mode)
+                                                   delegate:nil
+                                          cancelButtonTitle:@"好"
+                                          otherButtonTitles:nil];
+    [alert show];
 }
 
 @end
@@ -219,7 +297,7 @@ static void MBRemoteControl(id self, SEL _cmd, UIEvent *event) {
             cell.textLabel.textColor = [UIColor colorWithRed:0.8 green:0.15 blue:0.1 alpha:1.0];
         }
     } else {
-        cell.textLabel.text = @"清除下载会删除离线歌曲、歌词和封面";
+        cell.textLabel.text = @"清除下载会删除离线歌曲、歌词和封面，但保留收藏和历史";
         cell.textLabel.font = [UIFont systemFontOfSize:12.0];
         cell.textLabel.textColor = [UIColor grayColor];
         cell.textLabel.numberOfLines = 0;
@@ -252,12 +330,27 @@ static void MBRemoteControl(id self, SEL _cmd, UIEvent *event) {
         [self clearDirectory:NSTemporaryDirectory()];
         [self clearDirectory:[home stringByAppendingPathComponent:@"Library/Caches"]];
     } else {
-        [self clearDirectory:[home stringByAppendingPathComponent:@"Documents"]];
+        [self clearDownloadsPreservingFavorites];
         [self clearDirectory:[home stringByAppendingPathComponent:@"Library/Application Support"]];
     }
     [manager createDirectoryAtPath:[home stringByAppendingPathComponent:@"Documents"]
        withIntermediateDirectories:YES attributes:nil error:NULL];
     [self.tableView reloadData];
+}
+
+- (void)clearDownloadsPreservingFavorites {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSString *documents = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+    NSArray *items = [manager contentsOfDirectoryAtPath:documents error:NULL];
+    for (NSString *item in items) {
+        if ([item isEqualToString:@"f.plist"] || [item isEqualToString:@"h.plist"]) {
+            continue;
+        }
+        if ([[item pathExtension] isEqualToString:@"plist"] && ![item isEqualToString:@"d.plist"]) {
+            continue;
+        }
+        [manager removeItemAtPath:[documents stringByAppendingPathComponent:item] error:NULL];
+    }
 }
 
 - (void)clearDirectory:(NSString *)path {
@@ -290,8 +383,8 @@ static void MBInstallCacheButton(void) {
     if (!window) return;
     if ([window viewWithTag:0x4D424332]) return;
     UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-    button.frame = CGRectMake(10.0, window.bounds.size.height - 100.0, 54.0, 30.0);
-    button.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleRightMargin;
+    button.frame = CGRectMake(8.0, 24.0, 54.0, 30.0);
+    button.autoresizingMask = UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleRightMargin;
     button.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.9];
     button.layer.cornerRadius = 6.0;
     button.layer.borderWidth = 1.0;
@@ -351,6 +444,18 @@ static void MusicBackgroundInit(void) {
         if (!class_addMethod(appDelegateClass, remoteSelector, (IMP)MBRemoteControl, "v@:@")) {
             class_replaceMethod(appDelegateClass, remoteSelector, (IMP)MBRemoteControl, "v@:@");
         }
+    }
+
+    if (playerClass) {
+        MBSwizzle(playerClass, @selector(ended), @selector(mb_ended));
+    }
+    Class playerVCClass = objc_getClass("PlayerVC");
+    if (playerVCClass) {
+        MBSwizzle(playerVCClass, @selector(loopTap), @selector(mb_loopTap));
+    }
+    if ([[NSUserDefaults standardUserDefaults] objectForKey:kMBPlaybackModeKey] == nil) {
+        [[NSUserDefaults standardUserDefaults] setInteger:1 forKey:kMBPlaybackModeKey];
+        [[NSUserDefaults standardUserDefaults] synchronize];
     }
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
