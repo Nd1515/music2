@@ -1,4 +1,4 @@
-#import <AVFoundation/AVFoundation.h>
+﻿#import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -158,29 +158,153 @@ static void MBRemoteControl(id self, SEL _cmd, UIEvent *event) {
     }
 }
 
-#pragma mark - Settings cache size
 
-@interface SettingsVC : UITableViewController
+
+#pragma mark - Cache page
+
+@interface MBCacheViewController : UITableViewController <UIAlertViewDelegate>
 @end
 
-@interface SettingsVC (MusicBackgroundCache)
-- (UITableViewCell *)mb_tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath;
-@end
+@implementation MBCacheViewController
 
-@implementation SettingsVC (MusicBackgroundCache)
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"缓存管理";
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+                                                                             style:UIBarButtonItemStyleBordered
+                                                                            target:self
+                                                                            action:@selector(closeTapped:)];
+}
 
-- (UITableViewCell *)mb_tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [self mb_tableView:tableView cellForRowAtIndexPath:indexPath];
-    NSString *text = cell.textLabel.text;
-    if ([text rangeOfString:@"清除缓存"].location != NSNotFound) {
-        cell.textLabel.text = [NSString stringWithFormat:@"清除缓存（%@）", MBFormatBytes(MBCacheSize())];
-    } else if ([text rangeOfString:@"清除下载"].location != NSNotFound) {
-        cell.textLabel.text = [NSString stringWithFormat:@"清除下载（%@）", MBFormatBytes(MBDownloadSize())];
+- (void)closeTapped:(id)sender {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 3;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return section == 0 ? 2 : (section == 1 ? 2 : 1);
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (section == 0) return @"当前占用";
+    if (section == 1) return @"清理";
+    return @"说明";
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *identifier = @"MBCacheCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:identifier];
+    }
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.textLabel.textColor = [UIColor blackColor];
+    if (indexPath.section == 0) {
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"临时/图片缓存";
+            cell.detailTextLabel.text = MBFormatBytes(MBCacheSize());
+        } else {
+            cell.textLabel.text = @"下载/文档";
+            cell.detailTextLabel.text = MBFormatBytes(MBDownloadSize());
+        }
+    } else if (indexPath.section == 1) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"清除缓存";
+        } else {
+            cell.textLabel.text = @"清除下载";
+            cell.textLabel.textColor = [UIColor colorWithRed:0.8 green:0.15 blue:0.1 alpha:1.0];
+        }
+    } else {
+        cell.textLabel.text = @"清除下载会删除离线歌曲、歌词和封面";
+        cell.textLabel.font = [UIFont systemFontOfSize:12.0];
+        cell.textLabel.textColor = [UIColor grayColor];
+        cell.textLabel.numberOfLines = 0;
     }
     return cell;
 }
 
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section != 1) return;
+    NSInteger tag = indexPath.row + 1;
+    NSString *title = (tag == 1) ? @"清除缓存" : @"清除下载";
+    NSString *message = (tag == 1)
+        ? [NSString stringWithFormat:@"将清除临时文件和图片缓存（%@）。", MBFormatBytes(MBCacheSize())]
+        : [NSString stringWithFormat:@"将删除所有下载的歌曲、歌词和封面（%@）。", MBFormatBytes(MBDownloadSize())];
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:title
+                                                    message:message
+                                                   delegate:self
+                                          cancelButtonTitle:@"取消"
+                                          otherButtonTitles:@"清除", nil];
+    alert.tag = tag;
+    [alert show];
+}
+
+- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (buttonIndex != 1) return;
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSString *home = NSHomeDirectory();
+    if (alertView.tag == 1) {
+        [self clearDirectory:NSTemporaryDirectory()];
+        [self clearDirectory:[home stringByAppendingPathComponent:@"Library/Caches"]];
+    } else {
+        [self clearDirectory:[home stringByAppendingPathComponent:@"Documents"]];
+        [self clearDirectory:[home stringByAppendingPathComponent:@"Library/Application Support"]];
+    }
+    [manager createDirectoryAtPath:[home stringByAppendingPathComponent:@"Documents"]
+       withIntermediateDirectories:YES attributes:nil error:NULL];
+    [self.tableView reloadData];
+}
+
+- (void)clearDirectory:(NSString *)path {
+    if (path.length == 0) return;
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSArray *items = [manager contentsOfDirectoryAtPath:path error:NULL];
+    for (NSString *item in items) {
+        [manager removeItemAtPath:[path stringByAppendingPathComponent:item] error:NULL];
+    }
+}
+
 @end
+
+@interface MBCacheLauncher : NSObject
+- (void)open:(id)sender;
+@end
+
+@implementation MBCacheLauncher
+- (void)open:(id)sender {
+    UIViewController *top = [[UIApplication sharedApplication] keyWindow].rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    MBCacheViewController *controller = [[MBCacheViewController alloc] initWithStyle:UITableViewStyleGrouped];
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
+    [top presentViewController:navigation animated:YES completion:nil];
+}
+@end
+
+static void MBInstallCacheButton(void) {
+    UIWindow *window = [[UIApplication sharedApplication] keyWindow];
+    if (!window) return;
+    if ([window viewWithTag:0x4D424332]) return;
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    button.frame = CGRectMake(10.0, window.bounds.size.height - 100.0, 54.0, 30.0);
+    button.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleRightMargin;
+    button.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.9];
+    button.layer.cornerRadius = 6.0;
+    button.layer.borderWidth = 1.0;
+    button.layer.borderColor = [[UIColor colorWithWhite:1.0 alpha:0.25] CGColor];
+    button.titleLabel.font = [UIFont boldSystemFontOfSize:12.0];
+    [button setTitle:@"缓存" forState:UIControlStateNormal];
+    [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    button.tag = 0x4D424332;
+    MBCacheLauncher *launcher = [[MBCacheLauncher alloc] init];
+    objc_setAssociatedObject(button, "MBCacheLauncher", launcher, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [button addTarget:launcher action:@selector(open:) forControlEvents:UIControlEventTouchUpInside];
+    [window addSubview:button];
+}
 
 #pragma mark - Swizzling
 
@@ -229,12 +353,10 @@ static void MusicBackgroundInit(void) {
         }
     }
 
-    Class settingsClass = objc_getClass("SettingsVC");
-    if (settingsClass) {
-        MBSwizzle(settingsClass, @selector(tableView:cellForRowAtIndexPath:), @selector(mb_tableView:cellForRowAtIndexPath:));
-    }
-
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[Player sh] performSelector:@selector(mb_updateNowPlaying) withObject:nil];
+        MBInstallCacheButton();
     });
 }
+
+
