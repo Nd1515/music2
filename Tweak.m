@@ -1,4 +1,5 @@
 #import <AVFoundation/AVFoundation.h>
+#import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
@@ -34,6 +35,18 @@ static NSString *MBFormatBytes(unsigned long long bytes) {
     return [NSString stringWithFormat:@"%llu B", bytes];
 }
 
+static unsigned long long MBCacheSize(void) {
+    NSString *home = NSHomeDirectory();
+    return MBDirectorySize(NSTemporaryDirectory()) +
+           MBDirectorySize([home stringByAppendingPathComponent:@"Library/Caches"]);
+}
+
+static unsigned long long MBDownloadSize(void) {
+    NSString *home = NSHomeDirectory();
+    return MBDirectorySize([home stringByAppendingPathComponent:@"Documents"]) +
+           MBDirectorySize([home stringByAppendingPathComponent:@"Library/Application Support"]);
+}
+
 static void MusicBackgroundApplySession(void) {
     AVAudioSession *session = [AVAudioSession sharedInstance];
     NSError *error = nil;
@@ -42,62 +55,134 @@ static void MusicBackgroundApplySession(void) {
     [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
 }
 
+#pragma mark - App classes
+
+@interface Song : NSObject
+@property (nonatomic, copy) NSString *n;
+@property (nonatomic, copy) NSString *a;
+@property (nonatomic, copy) NSString *u;
+@property (nonatomic, copy) NSString *p;
+@end
+
+@interface Player : NSObject
++ (instancetype)sh;
+- (Song *)cur;
+- (AVPlayer *)av;
+- (double)knownDuration;
+- (void)next;
+- (void)prev;
+- (void)toggle;
+- (void)playURL:(id)url local:(BOOL)local;
+@end
+
+@interface Player (MusicBackgroundMedia)
+- (void)mb_playURL:(id)url local:(BOOL)local;
+- (void)mb_next;
+- (void)mb_prev;
+- (void)mb_toggle;
+- (void)mb_updateNowPlaying;
+@end
+
+@implementation Player (MusicBackgroundMedia)
+
+- (void)mb_updateNowPlaying {
+    Song *song = [self cur];
+    if (!song) {
+        [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nil];
+        return;
+    }
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    NSString *name = [song valueForKey:@"n"];
+    NSString *artist = [song valueForKey:@"a"];
+    if (name.length) [info setObject:name forKey:MPMediaItemPropertyTitle];
+    if (artist.length) [info setObject:artist forKey:MPMediaItemPropertyArtist];
+
+    AVPlayer *player = [self av];
+    if (player) {
+        double elapsed = CMTimeGetSeconds(player.currentTime);
+        if (isfinite(elapsed) && elapsed >= 0) {
+            [info setObject:[NSNumber numberWithDouble:elapsed] forKey:MPNowPlayingInfoPropertyElapsedPlaybackTime];
+        }
+        [info setObject:[NSNumber numberWithDouble:(player.rate > 0.01 ? 1.0 : 0.0)]
+                 forKey:MPNowPlayingInfoPropertyPlaybackRate];
+    }
+    double duration = [self knownDuration];
+    if (isfinite(duration) && duration > 0) {
+        [info setObject:[NSNumber numberWithDouble:duration] forKey:MPMediaItemPropertyPlaybackDuration];
+    }
+    [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:info];
+}
+
+- (void)mb_playURL:(id)url local:(BOOL)local {
+    [self mb_playURL:url local:local];
+    [self performSelector:@selector(mb_updateNowPlaying) withObject:nil afterDelay:0.3];
+}
+
+- (void)mb_next {
+    [self mb_next];
+    [self performSelector:@selector(mb_updateNowPlaying) withObject:nil afterDelay:0.3];
+}
+
+- (void)mb_prev {
+    [self mb_prev];
+    [self performSelector:@selector(mb_updateNowPlaying) withObject:nil afterDelay:0.3];
+}
+
+- (void)mb_toggle {
+    [self mb_toggle];
+    [self performSelector:@selector(mb_updateNowPlaying) withObject:nil afterDelay:0.2];
+}
+
+@end
+
+static void MBRemoteControl(id self, SEL _cmd, UIEvent *event) {
+    if (event.type != UIEventTypeRemoteControl) return;
+    Player *player = [Player sh];
+    switch (event.subtype) {
+        case UIEventSubtypeRemoteControlPlay:
+        case UIEventSubtypeRemoteControlPause:
+        case UIEventSubtypeRemoteControlTogglePlayPause:
+            [player toggle];
+            break;
+        case UIEventSubtypeRemoteControlNextTrack:
+            [player next];
+            break;
+        case UIEventSubtypeRemoteControlPreviousTrack:
+            [player prev];
+            break;
+        case UIEventSubtypeRemoteControlStop:
+            if ([[player av] rate] > 0.01) [player toggle];
+            break;
+        default:
+            break;
+    }
+}
+
+#pragma mark - Settings cache size
+
 @interface SettingsVC : UITableViewController
-- (void)clearCache;
-- (void)clearDownloads;
 @end
 
 @interface SettingsVC (MusicBackgroundCache)
-- (void)mb_viewDidLoad;
-- (void)mb_cacheTapped:(id)sender;
+- (UITableViewCell *)mb_tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath;
 @end
 
 @implementation SettingsVC (MusicBackgroundCache)
 
-- (void)mb_viewDidLoad {
-    [self mb_viewDidLoad];
-    if (self.navigationController) {
-        UIBarButtonItem *cacheButton = [[UIBarButtonItem alloc] initWithTitle:@"缓存"
-                                                                        style:UIBarButtonItemStyleBordered
-                                                                       target:self
-                                                                       action:@selector(mb_cacheTapped:)];
-        self.navigationItem.rightBarButtonItem = cacheButton;
-    } else {
-        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-        button.frame = CGRectMake(self.view.bounds.size.width - 72.0, 6.0, 64.0, 30.0);
-        button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        button.backgroundColor = [UIColor colorWithWhite:0.16 alpha:0.95];
-        button.layer.cornerRadius = 6.0;
-        button.layer.borderWidth = 1.0;
-        button.layer.borderColor = [[UIColor colorWithWhite:1.0 alpha:0.25] CGColor];
-        button.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
-        [button setTitle:@"缓存" forState:UIControlStateNormal];
-        [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        [button addTarget:self action:@selector(mb_cacheTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [self.view addSubview:button];
+- (UITableViewCell *)mb_tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [self mb_tableView:tableView cellForRowAtIndexPath:indexPath];
+    NSString *text = cell.textLabel.text;
+    if ([text rangeOfString:@"清除缓存"].location != NSNotFound) {
+        cell.textLabel.text = [NSString stringWithFormat:@"清除缓存（%@）", MBFormatBytes(MBCacheSize())];
+    } else if ([text rangeOfString:@"清除下载"].location != NSNotFound) {
+        cell.textLabel.text = [NSString stringWithFormat:@"清除下载（%@）", MBFormatBytes(MBDownloadSize())];
     }
-}
-
-- (void)mb_cacheTapped:(id)sender {
-    NSString *home = NSHomeDirectory();
-    NSString *caches = [home stringByAppendingPathComponent:@"Library/Caches"];
-    NSString *documents = [home stringByAppendingPathComponent:@"Documents"];
-    NSString *support = [home stringByAppendingPathComponent:@"Library/Application Support"];
-    unsigned long long cacheSize = MBDirectorySize(NSTemporaryDirectory()) + MBDirectorySize(caches);
-    unsigned long long documentSize = MBDirectorySize(documents) + MBDirectorySize(support);
-
-    NSString *message = [NSString stringWithFormat:
-                         @"临时/图片缓存：%@\n下载/文档：%@\n\n可在下面“清理”里清除缓存或下载。",
-                         MBFormatBytes(cacheSize), MBFormatBytes(documentSize)];
-    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"缓存管理"
-                                                    message:message
-                                                   delegate:nil
-                                          cancelButtonTitle:@"好"
-                                          otherButtonTitles:nil];
-    [alert show];
+    return cell;
 }
 
 @end
+
+#pragma mark - Swizzling
 
 static void MBSwizzle(Class cls, SEL original, SEL replacement) {
     if (!cls) return;
@@ -128,8 +213,28 @@ static void MusicBackgroundInit(void) {
         MusicBackgroundApplySession();
     }];
 
+    Class playerClass = objc_getClass("Player");
+    if (playerClass) {
+        MBSwizzle(playerClass, @selector(playURL:local:), @selector(mb_playURL:local:));
+        MBSwizzle(playerClass, @selector(next), @selector(mb_next));
+        MBSwizzle(playerClass, @selector(prev), @selector(mb_prev));
+        MBSwizzle(playerClass, @selector(toggle), @selector(mb_toggle));
+    }
+
+    Class appDelegateClass = objc_getClass("AppDelegate");
+    if (appDelegateClass) {
+        SEL remoteSelector = @selector(remoteControlReceivedWithEvent:);
+        if (!class_addMethod(appDelegateClass, remoteSelector, (IMP)MBRemoteControl, "v@:@")) {
+            class_replaceMethod(appDelegateClass, remoteSelector, (IMP)MBRemoteControl, "v@:@");
+        }
+    }
+
     Class settingsClass = objc_getClass("SettingsVC");
     if (settingsClass) {
-        MBSwizzle(settingsClass, @selector(viewDidLoad), @selector(mb_viewDidLoad));
+        MBSwizzle(settingsClass, @selector(tableView:cellForRowAtIndexPath:), @selector(mb_tableView:cellForRowAtIndexPath:));
     }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[Player sh] performSelector:@selector(mb_updateNowPlaying) withObject:nil];
+    });
 }
