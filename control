@@ -1,0 +1,9 @@
+Package: com.example.musicbackground
+Name: Music 后台播放
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: 让 Music 使用 Playback 音频会话，返回桌面/锁屏后继续播放。
+Maintainer: Music User
+Author: Music User
+Section: Tweaks
+Depends: mobilesubstrate

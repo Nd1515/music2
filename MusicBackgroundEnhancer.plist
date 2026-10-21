@@ -1,0 +1,11 @@
+{
+    Filter = {
+        Mode = Any;
+        Bundles = (
+            "mougou666.Music.9JCU3LNJWN"
+        );
+        Executables = (
+            "Music"
+        );
+    };
+}
